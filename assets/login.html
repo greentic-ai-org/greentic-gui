@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Greentic Login</title>
+  <link rel="stylesheet" href="/assets/theme.css" />
+</head>
+<body>
+  <main id="app-main">
+    <h1>Sign in</h1>
+    <form id="login-form" action="#" method="get">
+      <p>Select a provider:</p>
+      <button type="button" id="login-ms" data-provider="microsoft">Continue with Microsoft</button>
+      <button type="button" id="login-google" data-provider="google">Continue with Google</button>
+      <button type="button" id="login-github" data-provider="github">Continue with GitHub</button>
+    </form>
+    <p id="login-error" style="color:red; display:none;"></p>
+  </main>
+  <script>
+    function startAuth(provider) {
+      if (!provider) return;
+      window.location = `/auth/${provider}/start`;
+    }
+    document.querySelectorAll('[data-provider]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const provider = e.target.getAttribute('data-provider');
+        startAuth(provider);
+      });
+    });
+  </script>
+</body>
+</html>

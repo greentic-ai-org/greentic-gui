@@ -1,0 +1,50 @@
+[package]
+name = "greentic-gui"
+version = "0.4.0"
+edition = "2024"
+
+[features]
+default = []
+remote-worker-gateway = []
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["macros", "json"] }
+http = "1"
+hyper = { version = "1.8", features = ["full"] }
+greentic-session = { version = "0.4.1", default-features = true, features = ["interfaces"] }
+greentic-telemetry = "0.4"
+greentic-types = "0.4"
+greentic-distributor-client = "0.4"
+greentic-interfaces-guest = { version = "0.4", default-features = false, features = ["gui-fragment"] }
+greentic-interfaces-wasmtime = { version = "0.4", default-features = false }
+greentic-oauth-sdk = "0.4"
+greentic-oauth-client = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+tokio-stream = "0.1"
+flate2 = "1"
+tar = "0.4"
+wasmtime = { version = "39", features = ["component-model", "async"] }
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "signal", "sync"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "compression-br", "compression-deflate", "compression-gzip", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+serde_with = "3.9"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+tempfile = "3"
+kuchiki = "0"
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+greentic-interfaces-host = { version = "0.4.54", default-features = false, features = ["worker-v1", "gui-fragment"] }
+url = "2"
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["macros", "json"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Greentic GUI SDK Harness</title>
+</head>
+<body>
+  <div id="worker-slot"></div>
+  <script src="/greentic/gui-sdk.js"></script>
+  <script>
+    window.addEventListener("load", () => {
+      if (!window.GreenticGUI) {
+        console.error("GreenticGUI not loaded");
+        return;
+      }
+      window.GreenticGUI.init();
+      window.GreenticGUI.attachWorker({
+        workerId: "worker.test",
+        selector: "#worker-slot",
+        routes: ["/"],
+      });
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "greentic-gui-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "types": "src/gui-sdk/index.d.ts",
+  "scripts": {
+    "build-sdk": "esbuild src/gui-sdk/index.ts --bundle --outfile=assets/gui-sdk.js --format=iife",
+    "test-sdk": "node scripts/sdk-smoke.js && node scripts/sdk-tests.js && node scripts/sdk-dom-lite.js",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0",
+    "esbuild": "^0.27.1"
+  }
+}
