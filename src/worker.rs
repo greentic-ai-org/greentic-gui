@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use greentic_interfaces_host::worker::{HostWorkerMessage, HostWorkerRequest, HostWorkerResponse};
-use greentic_types::TenantCtx;
+use greentic_types::{SecretRequirement, TenantCtx};
+use serde::Deserialize;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::time::sleep;
@@ -11,6 +12,31 @@ use tracing::{info, warn};
 pub trait WorkerBackend: Send + Sync {
     async fn invoke(&self, req: HostWorkerRequest) -> anyhow::Result<HostWorkerResponse>;
 }
+
+/// Structured error bubbled up when the upstream runtime reports missing secrets.
+#[derive(Debug, Clone)]
+pub struct MissingSecretsError {
+    pub missing_secrets: Vec<SecretRequirement>,
+    pub pack_hint: Option<String>,
+    pub message: Option<String>,
+}
+
+impl std::fmt::Display for MissingSecretsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "missing secrets ({} requirement{})",
+            self.missing_secrets.len(),
+            if self.missing_secrets.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        )
+    }
+}
+
+impl std::error::Error for MissingSecretsError {}
 
 /// Stub backend that echoes the payload and marks the response as stubbed.
 #[derive(Clone, Default)]
@@ -62,6 +88,32 @@ impl HttpWorkerBackend {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct MissingSecretsPayload {
+    #[serde(default)]
+    missing_secrets: Vec<SecretRequirement>,
+    #[serde(default)]
+    pack_hint: Option<String>,
+    #[serde(default)]
+    pack_ref: Option<String>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+async fn parse_missing_secrets_response(resp: reqwest::Response) -> Option<MissingSecretsPayload> {
+    let status = resp.status();
+    let bytes = resp.bytes().await.ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    let payload: MissingSecretsPayload = serde_json::from_slice(&bytes).ok()?;
+    if payload.missing_secrets.is_empty() {
+        return None;
+    }
+    info!(status = %status, "upstream reported missing secrets");
+    Some(payload)
+}
+
 #[async_trait]
 impl WorkerBackend for HttpWorkerBackend {
     async fn invoke(&self, req: HostWorkerRequest) -> anyhow::Result<HostWorkerResponse> {
@@ -74,10 +126,19 @@ impl WorkerBackend for HttpWorkerBackend {
             }
             match request.send().await {
                 Ok(resp) => {
-                    if !resp.status().is_success() {
+                    let status = resp.status();
+                    if !status.is_success() {
+                        if let Some(missing) = parse_missing_secrets_response(resp).await {
+                            return Err(MissingSecretsError {
+                                missing_secrets: missing.missing_secrets,
+                                pack_hint: missing.pack_hint.or(missing.pack_ref),
+                                message: missing.message,
+                            }
+                            .into());
+                        }
                         last_err = Some(anyhow::anyhow!(
                             "worker gateway status {} on attempt {}",
-                            resp.status(),
+                            status,
                             attempt + 1
                         ));
                     } else {
@@ -129,7 +190,11 @@ impl WorkerHost {
         match self.backend.invoke(req).await {
             Ok(resp) => host_worker_response_to_json(resp),
             Err(err) => {
-                warn!(%worker_id, ?err, "worker backend call failed");
+                if err.downcast_ref::<MissingSecretsError>().is_some() {
+                    info!(%worker_id, "worker backend reported missing secrets");
+                } else {
+                    warn!(%worker_id, ?err, "worker backend call failed");
+                }
                 Err(err)
             }
         }

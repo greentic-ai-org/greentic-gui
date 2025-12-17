@@ -55,6 +55,12 @@ Environment defaults:
 - **Telemetry**
   - Standard OTLP vars (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME=greentic-gui`, headers, etc.) respected via greentic-telemetry.
 
+## Secrets workflow
+
+- GUI surfaces pack-declared `secret_requirements` and a `pack_init_hint` path from `/api/gui/config`; consumers can show these to operators.
+- On upstream missing-secret errors (runner/worker gateway/preflight), `/api/gui/worker/message` returns `error=missing_secrets` with the requirements and a remediation hint `greentic-secrets init --pack <path>` (extend similar handling to other APIs once upstreams emit structured errors).
+- GUI never lists or fetches secret values; it only relays requirements and hints.
+
 ## SDK
 
 - Source: `src/gui-sdk/index.ts`; bundled to `assets/gui-sdk.js` (global `window.GreenticGUI`).

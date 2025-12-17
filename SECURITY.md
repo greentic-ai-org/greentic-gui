@@ -75,6 +75,7 @@ Greentic follows modern secure-by-design principles, including:
 
 - Least-privilege execution via WASM sandboxing and explicit capabilities
 - Explicit secrets handling with no implicit environment leakage
+- GUI surfaces only secret *requirements* (no values) and returns structured missing-secret hints with `greentic-secrets init --pack <path>`; tokens/secret values must never appear in logs or telemetry.
 - Supply-chain hardening through hashing, provenance, and OCI-based distribution
 - Strongly typed interfaces (WIT contracts and schema validation)
 - Defense-in-depth through validation, redaction, and isolation

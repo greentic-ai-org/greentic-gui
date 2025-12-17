@@ -1,7 +1,7 @@
 use crate::api;
 use crate::auth;
 use crate::config::AppConfig;
-use crate::fragments::{FragmentRenderer, inject_fragments};
+use crate::fragments::{FragmentError, FragmentRenderer, inject_fragments};
 use crate::integration::{SessionManager, TelemetryEvent, TelemetrySink};
 use crate::packs::PackProvider;
 use crate::routing::{RouteDecision, resolve_route};
@@ -223,6 +223,15 @@ async fn serve_route(
             {
                 Ok(html) => html,
                 Err(err) => {
+                    if matches!(err, FragmentError::MissingSecrets(_)) {
+                        let pack_hint = tenant_cfg.layout.location.pack_hint.clone();
+                        let body = serde_json::json!({
+                            "error": "missing_secrets",
+                            "pack_hint": pack_hint,
+                            "remediation": pack_hint.as_ref().map(|hint| format!("greentic-secrets init --pack {hint}")),
+                        });
+                        return (StatusCode::PRECONDITION_REQUIRED, Json(body)).into_response();
+                    }
                     warn!(?err, "failed to inject fragments");
                     base_html
                 }

@@ -1,6 +1,6 @@
 [package]
 name = "greentic-gui"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 
 [features]
@@ -13,10 +13,10 @@ async-trait = "0.1"
 axum = { version = "0.8", features = ["macros", "json"] }
 http = "1"
 hyper = { version = "1.8", features = ["full"] }
-greentic-session = { version = "0.4.1", default-features = true, features = ["interfaces"] }
+greentic-session = { version = "0.4.1", default-features = true, features = ["interfaces", "redis"] }
 greentic-telemetry = "0.4"
 greentic-types = "0.4"
-greentic-distributor-client = "0.4"
+greentic-distributor-client = { version = "0.4", features = ["http-runtime"] }
 greentic-interfaces-guest = { version = "0.4", default-features = false, features = ["gui-fragment"] }
 greentic-interfaces-wasmtime = { version = "0.4", default-features = false }
 greentic-oauth-sdk = "0.4"
@@ -27,6 +27,8 @@ flate2 = "1"
 tar = "0.4"
 wasmtime = { version = "39", features = ["component-model", "async"] }
 base64 = "0.22"
+ciborium = "0.2"
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "signal", "sync"] }
@@ -43,6 +45,7 @@ regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 greentic-interfaces-host = { version = "0.4.54", default-features = false, features = ["worker-v1", "gui-fragment"] }
 url = "2"
+zip = "0.6"
 
 [dev-dependencies]
 axum = { version = "0.8", features = ["macros", "json"] }

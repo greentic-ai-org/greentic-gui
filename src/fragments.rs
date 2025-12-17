@@ -33,6 +33,8 @@ pub enum FragmentError {
     Renderer(String),
     #[error("html manipulation failed: {0}")]
     Html(String),
+    #[error("missing secrets: {0}")]
+    MissingSecrets(String),
 }
 
 #[async_trait]
@@ -119,6 +121,9 @@ impl FragmentRenderer for WitFragmentRenderer {
         {
             Ok(html) => Ok(Some(html)),
             Err(err) => {
+                if err.contains("missing_secrets") {
+                    return Err(FragmentError::MissingSecrets(err));
+                }
                 warn!(id = %binding.id, %err, "wit fragment render failed");
                 Ok(None)
             }
@@ -292,6 +297,20 @@ pub async fn inject_fragments(
                 debug!(id = %binding.id, "fragment renderer returned None");
             }
             Err(err) => {
+                if let FragmentError::MissingSecrets(msg) = &err {
+                    warn!(
+                        id = %binding.id,
+                        selector = %binding.selector,
+                        assets = %target.assets_root.display(),
+                        "fragment missing secrets: {msg}"
+                    );
+                    let fallback = format!(
+                        "<div class=\"fragment-error\" data-fragment-id=\"{}\">missing secrets for fragment</div>",
+                        binding.id
+                    );
+                    rendered.push((binding.clone(), fallback, target.assets_root.clone()));
+                    continue;
+                }
                 error!(
                     id = %binding.id,
                     selector = %binding.selector,

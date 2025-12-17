@@ -4,16 +4,20 @@ use greentic_distributor_client::{
     DistributorClient, HttpDistributorClient,
     types::{ArtifactLocation, DistributorEnvironmentId, ResolveComponentRequest},
 };
+use greentic_types::{PackManifest, SecretRequirement};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tokio::fs as tokio_fs;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
-use tracing::warn;
+use tracing::{debug, warn};
 use uuid::Uuid;
+use zip::CompressionMethod;
+use zip::write::FileOptions;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
@@ -33,12 +37,19 @@ pub struct DistributorPackRef {
     pub version: String,
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedPack {
+    root: PathBuf,
+    secret_requirements: Vec<SecretRequirement>,
+    pack_hint: Option<String>,
+}
+
 pub struct DistributorPackProvider {
     client: HttpDistributorClient,
     env_id: DistributorEnvironmentId,
     /// mapping from kind -> pack ref
     packs: HashMap<PackKind, DistributorPackRef>,
-    cache: tokio::sync::Mutex<HashMap<String, PathBuf>>,
+    cache: tokio::sync::Mutex<HashMap<String, ResolvedPack>>,
 }
 
 impl DistributorPackProvider {
@@ -55,13 +66,13 @@ impl DistributorPackProvider {
         }
     }
 
-    async fn resolve(&self, tenant: &str, kind: PackKind) -> anyhow::Result<Option<PathBuf>> {
+    async fn resolve(&self, tenant: &str, kind: PackKind) -> anyhow::Result<Option<ResolvedPack>> {
         let Some(pack_ref) = self.packs.get(&kind) else {
             return Ok(None);
         };
         let cache_key = format!("{}::{:?}", tenant, kind);
-        if let Some(path) = self.cache.lock().await.get(&cache_key).cloned() {
-            return Ok(Some(path));
+        if let Some(pack) = self.cache.lock().await.get(&cache_key).cloned() {
+            return Ok(Some(pack));
         }
 
         let tenant_ctx = greentic_types::TenantCtx::new(
@@ -79,15 +90,29 @@ impl DistributorPackProvider {
         };
 
         let resp = self.client.resolve_component(req).await?;
-        let path = match resp.artifact {
-            ArtifactLocation::FilePath { path } => PathBuf::from(path),
+        let mut secret_requirements = resp.secret_requirements.unwrap_or_default();
+        let (path, pack_hint) = match resp.artifact {
+            ArtifactLocation::FilePath { path } => {
+                let path_buf = PathBuf::from(&path);
+                (path_buf.clone(), Some(path))
+            }
             ArtifactLocation::OciReference { reference } => self.download_oci(&reference).await?,
             ArtifactLocation::DistributorInternal { handle } => {
-                self.materialize_internal(&handle).await?
+                let root = self.materialize_internal(&handle).await?;
+                (root, None)
             }
         };
-        self.cache.lock().await.insert(cache_key, path.clone());
-        Ok(Some(path))
+        // Merge in requirements from the manifest if present.
+        secret_requirements =
+            load_secret_requirements_from_pack_root(&path, secret_requirements, false);
+
+        let resolved = ResolvedPack {
+            pack_hint: pack_hint.or_else(|| pack_hint_from_root(&path)),
+            root: path.clone(),
+            secret_requirements,
+        };
+        self.cache.lock().await.insert(cache_key, resolved.clone());
+        Ok(Some(resolved))
     }
 
     async fn load_manifest_from_path(&self, root: PathBuf) -> anyhow::Result<serde_json::Value> {
@@ -102,30 +127,49 @@ impl DistributorPackProvider {
     }
 
     async fn load_pack(&self, tenant: &str, kind: PackKind) -> anyhow::Result<Option<GuiPack>> {
-        let Some(root) = self.resolve(tenant, kind.clone()).await? else {
+        let Some(resolved) = self.resolve(tenant, kind.clone()).await? else {
             return Ok(None);
         };
-        let manifest_json = self.load_manifest_from_path(root.clone()).await?;
+        let manifest_json = self.load_manifest_from_path(resolved.root.clone()).await?;
         let gui_pack = match manifest_json.get("kind").and_then(|v| v.as_str()) {
             Some("gui-layout") if kind == PackKind::GuiLayout => {
                 let manifest: LayoutManifest = serde_json::from_value(manifest_json)?;
-                Some(GuiPack::Layout { manifest, root })
+                Some(GuiPack::Layout {
+                    manifest,
+                    root: resolved.root,
+                    secret_requirements: resolved.secret_requirements,
+                    pack_hint: resolved.pack_hint,
+                })
             }
             Some("gui-auth") if kind == PackKind::GuiAuth => {
                 let manifest: AuthManifest = serde_json::from_value(manifest_json)?;
-                Some(GuiPack::Auth { manifest, root })
+                Some(GuiPack::Auth {
+                    manifest,
+                    root: resolved.root,
+                    secret_requirements: resolved.secret_requirements,
+                    pack_hint: resolved.pack_hint,
+                })
             }
             Some("gui-feature") if kind == PackKind::GuiFeature => {
                 let manifest: FeatureManifest = serde_json::from_value(manifest_json)?;
-                Some(GuiPack::Feature { manifest, root })
+                Some(GuiPack::Feature {
+                    manifest,
+                    root: resolved.root,
+                    secret_requirements: resolved.secret_requirements,
+                    pack_hint: resolved.pack_hint,
+                })
             }
             Some("gui-skin") if kind == PackKind::GuiSkin => Some(GuiPack::Skin {
                 manifest: manifest_json,
-                root,
+                root: resolved.root,
+                secret_requirements: resolved.secret_requirements,
+                pack_hint: resolved.pack_hint,
             }),
             Some("gui-telemetry") if kind == PackKind::GuiTelemetry => Some(GuiPack::Telemetry {
                 manifest: manifest_json,
-                root,
+                root: resolved.root,
+                secret_requirements: resolved.secret_requirements,
+                pack_hint: resolved.pack_hint,
             }),
             _ => None,
         };
@@ -143,7 +187,7 @@ impl DistributorPackProvider {
         ))
     }
 
-    async fn download_oci(&self, reference: &str) -> anyhow::Result<PathBuf> {
+    async fn download_oci(&self, reference: &str) -> anyhow::Result<(PathBuf, Option<String>)> {
         let tmp_dir = std::env::temp_dir().join(format!("greentic_gui_{}", Uuid::new_v4()));
         tokio_fs::create_dir_all(&tmp_dir).await?;
         let archive_path = tmp_dir.join("artifact.tar");
@@ -201,7 +245,8 @@ impl DistributorPackProvider {
             })
             .await?;
         }
-        Ok(tmp_dir)
+        let pack_hint = find_gtpack_in_dir(&tmp_dir).or_else(|| create_local_gtpack(&tmp_dir));
+        Ok((tmp_dir, pack_hint))
     }
 
     pub async fn reset_cache(&self) {
@@ -290,26 +335,46 @@ pub enum GuiPack {
     Layout {
         manifest: LayoutManifest,
         root: PathBuf,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        secret_requirements: Vec<SecretRequirement>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pack_hint: Option<String>,
     },
     #[serde(rename = "gui-auth")]
     Auth {
         manifest: AuthManifest,
         root: PathBuf,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        secret_requirements: Vec<SecretRequirement>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pack_hint: Option<String>,
     },
     #[serde(rename = "gui-feature")]
     Feature {
         manifest: FeatureManifest,
         root: PathBuf,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        secret_requirements: Vec<SecretRequirement>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pack_hint: Option<String>,
     },
     #[serde(rename = "gui-skin")]
     Skin {
         manifest: serde_json::Value,
         root: PathBuf,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        secret_requirements: Vec<SecretRequirement>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pack_hint: Option<String>,
     },
     #[serde(rename = "gui-telemetry")]
     Telemetry {
         manifest: serde_json::Value,
         root: PathBuf,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        secret_requirements: Vec<SecretRequirement>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pack_hint: Option<String>,
     },
 }
 
@@ -395,9 +460,13 @@ impl PackProvider for FsPackProvider {
             if manifest_json.get("kind").and_then(|v| v.as_str()) == Some("gui-layout") {
                 let manifest: LayoutManifest = serde_json::from_value(manifest_json.clone())
                     .context("parse layout manifest")?;
+                let secret_requirements =
+                    load_secret_requirements_from_pack_root(&pack_root, vec![], true);
                 return Ok(GuiPack::Layout {
                     manifest,
-                    root: pack_root,
+                    root: pack_root.clone(),
+                    secret_requirements,
+                    pack_hint: pack_hint_from_root(&pack_root),
                 });
             }
         }
@@ -412,9 +481,13 @@ impl PackProvider for FsPackProvider {
             if manifest_json.get("kind").and_then(|v| v.as_str()) == Some("gui-auth") {
                 let manifest: AuthManifest =
                     serde_json::from_value(manifest_json.clone()).context("parse auth manifest")?;
+                let secret_requirements =
+                    load_secret_requirements_from_pack_root(&pack_root, vec![], true);
                 return Ok(Some(GuiPack::Auth {
                     manifest,
-                    root: pack_root,
+                    root: pack_root.clone(),
+                    secret_requirements,
+                    pack_hint: pack_hint_from_root(&pack_root),
                 }));
             }
         }
@@ -427,9 +500,13 @@ impl PackProvider for FsPackProvider {
             let pack_root = self.tenant_pack_root(tenant, &name);
             let manifest_json = self.load_manifest(&pack_root).await?;
             if manifest_json.get("kind").and_then(|v| v.as_str()) == Some("gui-skin") {
+                let secret_requirements =
+                    load_secret_requirements_from_pack_root(&pack_root, vec![], true);
                 return Ok(Some(GuiPack::Skin {
                     manifest: manifest_json,
-                    root: pack_root,
+                    root: pack_root.clone(),
+                    secret_requirements,
+                    pack_hint: pack_hint_from_root(&pack_root),
                 }));
             }
         }
@@ -442,9 +519,13 @@ impl PackProvider for FsPackProvider {
             let pack_root = self.tenant_pack_root(tenant, &name);
             let manifest_json = self.load_manifest(&pack_root).await?;
             if manifest_json.get("kind").and_then(|v| v.as_str()) == Some("gui-telemetry") {
+                let secret_requirements =
+                    load_secret_requirements_from_pack_root(&pack_root, vec![], true);
                 return Ok(Some(GuiPack::Telemetry {
                     manifest: manifest_json,
-                    root: pack_root,
+                    root: pack_root.clone(),
+                    secret_requirements,
+                    pack_hint: pack_hint_from_root(&pack_root),
                 }));
             }
         }
@@ -460,9 +541,13 @@ impl PackProvider for FsPackProvider {
             if manifest_json.get("kind").and_then(|v| v.as_str()) == Some("gui-feature") {
                 let manifest: FeatureManifest = serde_json::from_value(manifest_json.clone())
                     .context("parse feature manifest")?;
+                let secret_requirements =
+                    load_secret_requirements_from_pack_root(&pack_root, vec![], true);
                 features.push(GuiPack::Feature {
                     manifest,
-                    root: pack_root,
+                    root: pack_root.clone(),
+                    secret_requirements,
+                    pack_hint: pack_hint_from_root(&pack_root),
                 });
             }
         }
@@ -515,6 +600,196 @@ pub fn normalize_route(path: &str) -> String {
     s
 }
 
+fn load_secret_requirements_from_pack_root(
+    root: &Path,
+    seed: Vec<SecretRequirement>,
+    try_manifest_json: bool,
+) -> Vec<SecretRequirement> {
+    let mut reqs = seed;
+    if let Some(mut manifest_reqs) = read_secret_requirements_from_manifest_cbor(root) {
+        reqs.append(&mut manifest_reqs);
+    }
+    if try_manifest_json
+        && let Some(mut manifest_reqs) = read_secret_requirements_from_manifest_json(root)
+    {
+        reqs.append(&mut manifest_reqs);
+    }
+    dedup_requirements(reqs)
+}
+
+fn read_secret_requirements_from_manifest_cbor(root: &Path) -> Option<Vec<SecretRequirement>> {
+    let manifest_path = root.join("manifest.cbor");
+    let file = std::fs::File::open(&manifest_path).ok()?;
+    let manifest: PackManifest = match ciborium::de::from_reader(file) {
+        Ok(m) => m,
+        Err(err) => {
+            debug!(?err, path = ?manifest_path, "failed to parse manifest.cbor for secrets");
+            return None;
+        }
+    };
+    Some(manifest.secret_requirements)
+}
+
+fn read_secret_requirements_from_manifest_json(root: &Path) -> Option<Vec<SecretRequirement>> {
+    let manifest_path = root.join("manifest.json");
+    if !manifest_path.exists() {
+        return None;
+    }
+    let file = std::fs::File::open(&manifest_path).ok()?;
+    let manifest: PackManifest = match serde_json::from_reader(file) {
+        Ok(m) => m,
+        Err(err) => {
+            debug!(?err, path = ?manifest_path, "failed to parse manifest.json for secrets");
+            return None;
+        }
+    };
+    Some(manifest.secret_requirements)
+}
+
+fn pack_hint_from_root(root: &Path) -> Option<String> {
+    if root.extension().is_some_and(|ext| ext == "gtpack") {
+        return Some(root.to_string_lossy().to_string());
+    }
+    if let Some(path) = find_gtpack_in_dir(root) {
+        return Some(path);
+    }
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("gtpack"))
+            {
+                return Some(path.to_string_lossy().to_string());
+            }
+        }
+    }
+    let manifest_cbor = root.join("manifest.cbor");
+    if manifest_cbor.exists() {
+        return Some(manifest_cbor.to_string_lossy().to_string());
+    }
+    None
+}
+
+fn dedup_requirements(reqs: Vec<SecretRequirement>) -> Vec<SecretRequirement> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for req in reqs {
+        let key = requirement_key(&req);
+        if seen.insert(key) {
+            out.push(req);
+        }
+    }
+    out
+}
+
+fn requirement_key(req: &SecretRequirement) -> String {
+    let scope = req
+        .scope
+        .as_ref()
+        .map(|s| {
+            format!(
+                "{}/{}/{}",
+                s.env,
+                s.tenant,
+                s.team.as_deref().unwrap_or("_")
+            )
+        })
+        .unwrap_or_else(|| "_/_/_".to_string());
+    format!("{}::{}", scope, req.key.as_str())
+}
+
+fn find_gtpack_in_dir(root: &Path) -> Option<String> {
+    if root.is_file()
+        && root
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("gtpack"))
+    {
+        return Some(root.to_string_lossy().to_string());
+    }
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("gtpack"))
+                {
+                    return Some(path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn create_local_gtpack(root: &Path) -> Option<String> {
+    let manifest_path = root.join("manifest.cbor");
+    if !manifest_path.exists() {
+        return None;
+    }
+    let out_path = root.join("cached.gtpack");
+    let file = std::fs::File::create(&out_path).ok()?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = FileOptions::default()
+        .compression_method(CompressionMethod::Stored)
+        .unix_permissions(0o644);
+
+    let manifest_bytes = fs::read(&manifest_path).ok()?;
+    if writer.start_file("manifest.cbor", options).is_err() {
+        return None;
+    }
+    if writer.write_all(&manifest_bytes).is_err() {
+        return None;
+    }
+
+    for (_prefix, dir) in [
+        ("components", root.join("components")),
+        ("assets", root.join("assets")),
+    ] {
+        if dir.exists() {
+            for entry in list_files_recursively(&dir) {
+                let rel = entry.strip_prefix(root).ok()?;
+                let logical = rel.to_string_lossy().replace('\\', "/");
+                if writer.start_file(logical, options).is_err() {
+                    return None;
+                }
+                let bytes = fs::read(&entry).ok()?;
+                if writer.write_all(&bytes).is_err() {
+                    return None;
+                }
+            }
+        }
+    }
+
+    if writer.finish().is_err() {
+        return None;
+    }
+    Some(out_path.to_string_lossy().to_string())
+}
+
+fn list_files_recursively(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+    }
+    files
+}
+
 /// Build a distributor-backed pack provider using config JSON mapping.
 pub fn distributor_provider_from_json(
     client: HttpDistributorClient,
@@ -535,4 +810,81 @@ pub fn distributor_provider_from_json(
         packs.insert(kind, v);
     }
     Ok(DistributorPackProvider::new(client, env_id, packs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use greentic_types::{PackId, PackKind, PackManifest, PackSignatures, SecretKey, SecretScope};
+    use semver::Version;
+
+    #[test]
+    fn normalizes_routes() {
+        assert_eq!(normalize_route("foo/bar"), "/foo/bar");
+        assert_eq!(normalize_route("/foo/bar"), "/foo/bar");
+        assert_eq!(normalize_route("/foo//bar"), "/foo/bar");
+        assert_eq!(normalize_route("foo///bar"), "/foo/bar");
+    }
+
+    #[test]
+    fn loads_secret_requirements_from_manifest_cbor() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("manifest.cbor");
+        let mut req = SecretRequirement::default();
+        req.key = SecretKey::new("api/token").unwrap();
+        req.description = Some("token".into());
+        req.scope = Some(SecretScope {
+            env: "dev".into(),
+            tenant: "tenant".into(),
+            team: Some("team".into()),
+        });
+        let manifest = PackManifest {
+            schema_version: "1".into(),
+            pack_id: PackId::new("demo.pack").unwrap(),
+            version: Version::new(0, 1, 0),
+            kind: PackKind::Application,
+            publisher: "demo".into(),
+            components: vec![],
+            flows: vec![],
+            dependencies: vec![],
+            capabilities: vec![],
+            secret_requirements: vec![req.clone()],
+            signatures: PackSignatures::default(),
+        };
+        let file = std::fs::File::create(manifest_path).unwrap();
+        ciborium::ser::into_writer(&manifest, file).unwrap();
+
+        let reqs = load_secret_requirements_from_pack_root(temp.path(), vec![], true);
+        assert_eq!(reqs.len(), 1);
+        assert_eq!(reqs[0].key.as_str(), req.key.as_str());
+        assert_eq!(reqs[0].description, req.description);
+    }
+
+    #[test]
+    fn creates_gtpack_hint_when_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("manifest.cbor");
+        let manifest = PackManifest {
+            schema_version: "1".into(),
+            pack_id: PackId::new("demo.pack").unwrap(),
+            version: Version::new(0, 1, 0),
+            kind: PackKind::Application,
+            publisher: "demo".into(),
+            components: vec![],
+            flows: vec![],
+            dependencies: vec![],
+            capabilities: vec![],
+            secret_requirements: vec![],
+            signatures: PackSignatures::default(),
+        };
+        let file = std::fs::File::create(manifest_path).unwrap();
+        ciborium::ser::into_writer(&manifest, file).unwrap();
+
+        let gtpack = create_local_gtpack(temp.path()).expect("gtpack path");
+        assert!(
+            gtpack.ends_with(".gtpack"),
+            "gtpack hint should point to a .gtpack file"
+        );
+        assert!(PathBuf::from(gtpack).exists());
+    }
 }
