@@ -8,6 +8,21 @@ Axum-based Greentic GUI runtime that serves tenant-specific GUI packs, enforces 
 cargo run
 ```
 
+## Installation (prebuilt binaries)
+
+This repo publishes “binstall-ready” archives for Linux/macOS/Windows via GitHub Releases.
+
+Stable (latest tagged release):
+
+```bash
+cargo install cargo-binstall
+cargo binstall greentic-gui
+```
+
+Nightly (latest `master`):
+
+- Download the correct archive from the GitHub Release named `Nightly` (tag `nightly`), unzip/untar, and place `greentic-gui` on your `PATH`.
+
 Environment defaults:
 - `BIND_ADDR=0.0.0.0:8080`
 - `PACK_ROOT=./packs`
