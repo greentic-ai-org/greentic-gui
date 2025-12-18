@@ -60,8 +60,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo-dist --version
-          cargo-dist build --target ${{ matrix.target }}
+          dist --version
+          dist build --target ${{ matrix.target }}
 
       - name: Collect artifacts
         shell: bash
