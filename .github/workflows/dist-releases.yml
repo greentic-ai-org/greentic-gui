@@ -50,10 +50,18 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install cargo-dist
-        run: cargo install cargo-dist --locked --version 0.28.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-dist --locked --version 0.28.0
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Build dist artifacts
-        run: cargo dist build --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo-dist --version
+          cargo-dist build --target ${{ matrix.target }}
 
       - name: Collect artifacts
         shell: bash
