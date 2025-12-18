@@ -4,6 +4,23 @@ version = "0.4.3"
 edition = "2024"
 repository = "https://github.com/greentic-ai/greentic-gui"
 
+[package.metadata.dist]
+# Generate binstall-friendly archives and checksums for GitHub Releases.
+ci = ["github"]
+installers = []
+
+# Pin versions used by CI for reproducibility.
+rust-toolchain-version = "1.85.0"
+cargo-dist-version = "0.28.0"
+
+# Targets we publish prebuilt archives for.
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+
 [features]
 default = []
 remote-worker-gateway = []
