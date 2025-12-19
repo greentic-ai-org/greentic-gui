@@ -9,6 +9,20 @@ repository = "https://github.com/greentic-ai/greentic-gui"
 documentation = "https://github.com/greentic-ai/greentic-gui"
 readme = "README.md"
 keywords = ["greentic", "gui", "axum", "runtime", "wasm"]
+exclude = [
+  "/node_modules/**",
+  "/package-lock.json",
+  "/package.json",
+  "/playwright.config.ts",
+  "/scripts/**",
+  "/tests/**",
+  "/ci/**",
+  "/.github/**",
+  "/.codex/**",
+  "/Cargo.toml.orig",
+  "/.DS_Store",
+  "/**/.DS_Store",
+]
 
 [workspace]
 members = ["."]
