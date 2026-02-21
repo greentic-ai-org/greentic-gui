@@ -4,7 +4,7 @@
   "private": true,
   "types": "src/gui-sdk/index.d.ts",
   "scripts": {
-    "build-sdk": "esbuild src/gui-sdk/index.ts --bundle --outfile=assets/gui-sdk.js --format=iife",
+    "build-sdk": "node scripts/build-sdk.js",
     "test-sdk": "node scripts/sdk-smoke.js && node scripts/sdk-tests.js && node scripts/sdk-dom-lite.js",
     "test:browser": "playwright test"
   },

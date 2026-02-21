@@ -1,6 +1,6 @@
 [package]
 name = "greentic-gui"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2024"
 description = "Greentic GUI runtime (Axum-based) that serves tenant packs, enforces auth, and exposes worker/session APIs plus a browser SDK."
 license = "MIT"
@@ -76,7 +76,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio-stream = "0.1"
 flate2 = "1"
 tar = "0.4"
-wasmtime = { version = "39", features = ["component-model", "async"] }
+wasmtime = { version = "41", features = ["component-model", "async"] }
 base64 = "0.22"
 ciborium = "0.2"
 semver = "1"
@@ -98,7 +98,7 @@ greentic-interfaces-host = { version = "0.4.54", default-features = false, featu
 url = "2"
 greentic-config = "0.4"
 greentic-config-types = "0.4"
-zip = "6"
+zip = "8"
 clap = { version = "4", features = ["derive"] }
 toml = "0.9"
 

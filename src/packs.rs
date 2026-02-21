@@ -841,6 +841,7 @@ mod tests {
         let manifest = PackManifest {
             schema_version: "1".into(),
             pack_id: PackId::new("demo.pack").unwrap(),
+            name: None,
             version: Version::new(0, 1, 0),
             kind: PackKind::Application,
             publisher: "demo".into(),
@@ -850,6 +851,8 @@ mod tests {
             capabilities: vec![],
             secret_requirements: vec![req.clone()],
             signatures: PackSignatures::default(),
+            bootstrap: None,
+            extensions: None,
         };
         let file = std::fs::File::create(manifest_path).unwrap();
         ciborium::ser::into_writer(&manifest, file).unwrap();
@@ -867,6 +870,7 @@ mod tests {
         let manifest = PackManifest {
             schema_version: "1".into(),
             pack_id: PackId::new("demo.pack").unwrap(),
+            name: None,
             version: Version::new(0, 1, 0),
             kind: PackKind::Application,
             publisher: "demo".into(),
@@ -876,6 +880,8 @@ mod tests {
             capabilities: vec![],
             secret_requirements: vec![],
             signatures: PackSignatures::default(),
+            bootstrap: None,
+            extensions: None,
         };
         let file = std::fs::File::create(manifest_path).unwrap();
         ciborium::ser::into_writer(&manifest, file).unwrap();

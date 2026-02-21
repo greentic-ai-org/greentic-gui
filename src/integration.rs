@@ -100,6 +100,7 @@ impl SessionManager for RealSessionManager {
         let data = SessionData {
             tenant_ctx: ctx.clone(),
             flow_id,
+            pack_id: None,
             cursor,
             context_json: "{}".to_string(),
         };
