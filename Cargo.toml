@@ -1,6 +1,6 @@
 [package]
 name = "greentic-gui"
-version = "0.4.5"
+version = "0.4.6"
 edition = "2024"
 description = "Greentic GUI runtime (Axum-based) that serves tenant packs, enforces auth, and exposes worker/session APIs plus a browser SDK."
 license = "MIT"
