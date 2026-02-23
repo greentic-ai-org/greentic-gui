@@ -3,7 +3,7 @@ name: dist (binstall-ready releases)
 on:
   push:
     branches: [master]
-    tags: ["v*.*.*"]
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -26,7 +26,7 @@ jobs:
         with:
           toolchain: "1.91.0"
 
-      - name: Publish greentic-gui to crates.io (master + tags)
+      - name: Publish greentic-gui to crates.io (master)
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         shell: bash
@@ -123,56 +123,37 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build, publish-crate]
     steps:
-      - name: Checkout repo (for git context/GH CLI)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      - uses: actions/checkout@v4
 
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          pattern: dist-*
-          path: release-artifacts
-          merge-multiple: true
+          toolchain: "1.91.0"
 
-      - name: Publish GitHub Release (nightly or tag)
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Compute crate version
+        id: version
         shell: bash
         run: |
           set -euo pipefail
+          VERSION=$(cargo metadata --format-version 1 --no-deps | python -c 'import json,sys; data=json.load(sys.stdin); print(next(p["version"] for p in data["packages"] if p.get("name")=="greentic-gui"))')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            tag="${GITHUB_REF_NAME}"
-            title="greentic-gui ${tag}"
-            prerelease_flag=""
-          else
-            tag="nightly"
-            title="Nightly"
-            prerelease_flag="--prerelease"
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
 
-            # Force-move (or create) the nightly tag to this commit.
-            if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" >/dev/null 2>&1; then
-              gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" -f sha="${GITHUB_SHA}" -F force=true >/dev/null
-            else
-              gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" -f ref="refs/tags/${tag}" -f sha="${GITHUB_SHA}" -F force=true >/dev/null
-            fi
-          fi
+      - name: List release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -R dist
 
-          if gh release view "${tag}" >/dev/null 2>&1; then
-            gh release edit "${tag}" --title "${title}" ${prerelease_flag}
-          else
-            if [[ "${tag}" == "nightly" ]]; then
-              gh release create "${tag}" --title "${title}" --prerelease --target "${GITHUB_SHA}" --notes "Automated nightly build from master."
-            else
-              gh release create "${tag}" --title "${title}" --target "${GITHUB_SHA}" --generate-notes
-            fi
-          fi
-
-          mapfile -d '' files < <(find release-artifacts -type f -maxdepth 4 -print0)
-          if [[ "${#files[@]}" -eq 0 ]]; then
-            echo "No release artifacts found to upload." >&2
-            exit 1
-          fi
-
-          gh release upload "${tag}" "${files[@]}" --clobber
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: greentic-gui v${{ steps.version.outputs.version }}
+          files: dist/**/*.tgz
+          generate_release_notes: true
